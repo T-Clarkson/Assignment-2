@@ -8,5 +8,168 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+GitHub Repository: https://github.com/T-Clarkson/Assignment-2
+
+```{r, echo=FALSE}
+library(pacman)
+pacman::p_load(metafor, flextable, tidyverse, orchaRd, pander, mathjaxr, equatags, vembedr, tidyverse)
+```
+
+```{r echo=FALSE, include=FALSE}
+#Reading in Clark et al data
+c_data <- read.csv("OA_activitydat_20190302_BIOL3207 (1).csv")
+summary(c_data)
+#Reading in metadata
+m_data <- read.csv("clark_paper_data.csv")
+#Removing NAs from Clark et al data
+c_data <- c_data %>% filter(!(is.na(animal_id)))
+c_data <- c_data %>% filter(!(is.na(activity)))
+
+```
+
+```{r echo=FALSE, include=FALSE}
+
+#Merging Clark et al summary data into the meta data
+
+ctrl_means <- c_data %>% filter(treatment=="control") %>% group_by(species) %>% summarise(ctrl.mean=mean(activity))
+oa_means <- c_data %>% filter(treatment=="CO2") %>% group_by(species) %>% summarise(oa.mean=mean(activity))
+
+ctrl_sds <- c_data %>% filter(treatment=="control") %>% group_by(species) %>% summarise(ctrl.sd=sd(activity))
+oa_sds <- c_data %>% filter(treatment=="CO2") %>% group_by(species) %>% summarise(oa.sd=sd(activity))
+
+ctrl_ns <- c_data %>% filter(treatment=="control") %>% group_by(species) %>% summarise(ctrl.n=n())
+oa_ns <- c_data %>% filter(treatment=="CO2") %>% group_by(species) %>% summarise(oa.n=n())
+
+summary_stats <- merge(ctrl_means,ctrl_ns)
+summary_stats <- merge(summary_stats,ctrl_sds)
+summary_stats <- merge(summary_stats,oa_means)
+summary_stats <- merge(summary_stats,oa_ns)
+summary_stats <- merge(summary_stats,oa_sds)
+
+m_data <- merge(m_data,summary_stats)
+
+m_data <- m_data %>% rename(Species=species)
+```
+
+```{R echo=FALSE, include=FALSE}
+o_data <- read.csv("ocean_meta_data.csv")
+```
+
+```{r echo=FALSE, include=FALSE}
+o_data<-rbind(o_data,m_data)
+
+o_data$Cue.stimulus.type[is.na(o_data$Cue.stimulus.type)] <- "-"
+```
+
+```{r echo=FALSE, include=FALSE}
+
+o_data <- o_data %>% filter(!(is.na(ctrl.mean)))
+o_data <- o_data %>% filter(!(is.na(ctrl.sd)))
+o_data <- o_data %>% filter(!(is.na(ctrl.n)))
+o_data <- o_data %>% filter(!(is.na(oa.mean)))
+o_data <- o_data %>% filter(!(is.na(oa.sd)))
+o_data <- o_data %>% filter(!(is.na(oa.n)))
+
+o_data <- escalc(data=o_data,
+                 measure="ROM",
+                 m1i=ctrl.mean, sd1i=ctrl.sd, n1i=ctrl.n, 
+                 m2i=oa.mean, sd2i=oa.sd, n2i=oa.n,
+                 var.names=c("lnRR","lnRR_V"))
+
+```
 
 
+```{R echo=FALSE, include=FALSE}
+no_data <- subset(o_data, lnRR_V<10 & lnRR_V>0.00001)
+```
+
+```{r echo=FALSE, include=FALSE}
+meta_model <- rma.mv(lnRR~1, V=lnRR_V,
+                     random = list(~1|Study,
+                                   ~1|Average.n),
+                     test="t",dfs="contain",
+                     data=no_data)
+summary(meta_model)
+```
+
+```{r echo=FALSE, include=FALSE}
+i2_vals <- orchaRd::i2_ml(meta_model)
+
+i2 <- tibble(type = firstup(gsub("I2_", "",names(i2_vals))), I2 = i2_vals)
+i2
+
+pis <- predict(meta_model)
+pis
+
+
+```
+
+> The meta-analytic mean effect size across the studies is `r coef(meta_model)`. Mean log response ratio is therefore positive, but it suggests that the relationship between ocean acidification and fish activity is relatively weak. Additionally, the p value for the meta-analytic mean is `r meta_model$pval`, indicating that the log response ratio is likely not significantly different from 0. The meta-analytical mean has 95% CIs of `r meta_model$ci.lb` to `r meta_model$ci.ub`, overlapping 0. Furthermore, the effect size data is very heterogenous, with sampling variation only contributing to `r 100 - i2[1, "I2"]`% of the total variation in effects (Total $I^2$ = `r i2$I2[1]`). The prediction intervals are very large with effect size (lnRR) expected to range between `r pis$pi.lb` to `r pis$pi.ub`. This indicates that the effect sizes found across studies are quite inconsistent.
+
+```{r forest, fig.cap= "Figure 1: Forest plot, showing the effect of ocean acidification on fish activity using log response ratio (lnRR). k = number of effect sizes(number of studies)", echo=FALSE}
+orchaRd::orchard_plot(meta_model, mod= "1",group = "Study", data = no_data, xlab = "Log Response Ratio (lnRR)", angle = 45, alpha =0.2)
+  
+```
+
+
+```{r funnel, fig.cap= "Figure 2: Funnel plot showing the inverse standard error against log response ratio of the effects in different studies. The dotted lines represent theoretical 95% confidence intervals. The shaded regions represent the p values of each study.", echo=FALSE}
+#funnel plot
+metafor::funnel(x = no_data$lnRR, vi = no_data$lnRR_V, 
+                yaxis = "seinv", digits = 2, 
+                level = c(0.1, 0.05, 0.01), 
+                shade = c("white", "gray55", "gray 75"), las = 1, 
+                xlab = "Log Response Ratio (lnRR)",legend = TRUE,
+                ylim = c(0.1,63),
+                xlim = c(-7,7))
+```
+
+```{r time, fig.cap= "Figure 3: Time-lag plot, showing log response ratio as a function of the year of study publication. The points are scaled to the precision of the study, with larger points representing lower precision.", echo=FALSE}
+#time lag plot
+ggplot(data=o_data, aes(x=Year..online.,y=lnRR))  +
+  geom_point(data=o_data, aes(size=1/sqrt(lnRR))) +
+  geom_smooth(method="lm")
+```
+
+```{r, echo=FALSE}
+#meta regression with year as moderator
+meta_time <- rma.mv(lnRR ~ Year..online., V = lnRR_V, 
+                    random = list(~1|Study, 
+                                  ~1|Average.n), 
+                    test = "t", dfs = "contain", 
+                    data = no_data)
+summary(meta_time)
+
+r2_time <-  orchaRd::r2_ml(meta_time)
+r2_time
+```
+
+```{r, echo=FALSE}
+meta_file <- rma.mv(lnRR ~ (1/lnRR_V), V = lnRR_V, 
+                    random = list(~1|Study, 
+                                  ~1|Average.n), 
+                    test = "t", dfs = "contain", 
+                    data = no_data)
+summary(meta_file)
+r2_file <-  orchaRd::r2_ml(meta_file)
+r2_file
+```
+> In Fig. 2 we can see that there is no particularly dominant effect of ocean acidification on activity. The studies are relatively symmetrically distributed across the plot, showing no clear positive or negative effect. Additionally, we know from modelling that the mean effect size is `r coef(meta_model)` with an insignificant p value (`r meta_model$pval`). It could be argued that this plot appears to show a publication bias towards negative effect results, however, this is likely to be minimal. 
+
+>Fig. 3 appears to show a postive trend in the log response ratio as time goes on. This could indicate a time-lag bias. Where there are fewer studies initially, this can create a skewed perception of the degree and direction of the effect of ocean acidification on activity. Here, it seems like an initially negative effect may actually be null or positive. However, a meta-regression with the year of publishing as a moderator does not support this. Only `r r2_time[1]*100`% of variation in effect size appears to be related to changes through time. Therefore, it is likely that we can reject that there is a time-lag bias.
+
+> Addtionally, there does not appear to be a file-drawer bias as a meta-regression including inverse sampling variance indicates that this contributes `r r2_file[1]*100`% to the variation in effect. This indicates that there is no influence of file-drawer bias, where researchers are less likely to publish insignificant effects.
+
+>Overall, this analysis appears to support that there is no major publication bias in the area, perhaps beyond a slight time-lag effect that cannot be supported statistically. Clements et al (2022) found a 'decline effect', where the effect size of these studies decreased over time, which supports the trend apparent in Fig. 3. They found that the large effects found in initial studies near to disappeared in later studies and theorise that there is an overall negligable effect of ocean acidification on fish activity (Clements et al, 2022). This supports our small and insignificant meta-analytical mean (`r coef(meta_model)`, P=`r meta_model$pval`). Additionally, Clements et al, 2022 found that studies with greater effect size had relatively low sample sizes which is likely to contribute to Type I and Type II errors. For example, in this analysis, the largest 25 effects were all from studies with a sample size of less than 30. One of the largest effect sizes comes from Rodriguez-Dominguez et al's (2018) study that had a sample size of only 4 (lnRR=`r o_data$lnRR[687]`). Additionally, these small sample sizes are more vulnerable to p-hacking by delibrate exclusion of certain data points (Head et al, 2015). Regardless, Clements et al (2022) suggest that these results are disproportionately reported in high-impact journals which could impact further research where these less reliable results are cited.
+
+>To conclude, as per Clements et al's (2022) meta-analysis, there is unlikely to be a major effect of ocean acidification on fish activity. Any apparent effect is most likely to be the result of publication bias, perhaps most notably time-lag bias. On top of this, sample size is likely to play a significant role. Whilst this analysis found no major indication of publication bias, it is evident that studies with lower sample sizes are giving rise to the largest effects. Whilst this won't necessarily present as a publication bias in analyses, it is a factor that is likely to skew the overall perceived effect.
+
+>(Rows in which lnRR variance exceeded 10 or was lower than 0.0001 were excluded from my analysis, as this degree of sampling variance is unlikely to occur without error.)
+
+
+References
+
+Clements, J.C. et al. (2022) “Meta-analysis reveals an extreme ‘decline effect’ in the impacts of ocean acidification on fish behavior,” PLOS Biology, 20(2). Available at: https://doi.org/10.1371/journal.pbio.3001511. 
+
+Head, M.L. et al. (2015) “The extent and consequences of P-hacking in science,” PLOS Biology, 13(3). Available at: https://doi.org/10.1371/journal.pbio.1002106. 
+
+Rodriguez-Dominguez, A. et al. (2018) “Irreversible behavioural impairment of fish starts early: Embryonic exposure to ocean acidification,” Marine Pollution Bulletin, 133, pp. 562–567. Available at: https://doi.org/10.1016/j.marpolbul.2018.06.004. 
